@@ -3,8 +3,13 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel, Field
+from app.memory.bank_resolver import resolve_team_bank_id
+from app.agent.orchestrator import AgentOrchestrator
 
 router = APIRouter(tags=["Chat"])
+
+# Shared orchestrator instance
+orchestrator = AgentOrchestrator()
 
 
 class MemoryItem(BaseModel):
@@ -30,13 +35,26 @@ class ChatResponse(BaseModel):
 @router.post("/chat", response_model=ChatResponse, summary="Send message to ContextIQ agent")
 async def chat_endpoint(req: ChatRequest):
     """
-    Chat endpoint structure prepared for Phase 2 integration.
-    Connects to AgentOrchestrator in Phase 2.
+    Main chat endpoint coordinating the ContextIQ persistent memory pipeline.
+    Server controls the team and bank ID resolution; client cannot inject an arbitrary bank.
     """
-    return ChatResponse(
-        response="ContextIQ Phase 1 foundation is operational. Chat processing activates in Phase 2.",
+    # 1. Resolve server-side team and memory bank
+    team_id = "team_default"
+    bank_id = resolve_team_bank_id(team_id)
+
+    # 2. Process via orchestrator (Retain, Recall, LLM, Degraded mode)
+    result = await orchestrator.process_chat(
+        message=req.message,
+        conversation_id=req.conversation_id,
         memory_enabled=req.memory_enabled,
-        memories_used=[],
-        memories_stored=[],
-        memory_status="available",
+        team_id=team_id,
+        bank_id=bank_id,
+    )
+
+    return ChatResponse(
+        response=result["response"],
+        memory_enabled=result["memory_enabled"],
+        memories_used=[MemoryItem(**m) for m in result["memories_used"]],
+        memories_stored=result["memories_stored"],
+        memory_status=result["memory_status"],
     )
