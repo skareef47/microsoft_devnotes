@@ -1,17 +1,29 @@
-from __future__ import annotations
-
+from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.config import get_settings
+from app.database import init_db
 from app.api import health, chat, memories, demo
 from app.auth import routes as auth_routes
 
 settings = get_settings()
 
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    init_db()
+    yield
+
+
+# Initialize database tables immediately on import for test harnesses & development
+init_db()
+
+
 app = FastAPI(
     title="ContextIQ API",
-    description="Persistent-memory AI assistant backend powered by Hindsight Cloud",
+    description="Persistent-memory AI assistant backend powered by self-hosted Hindsight",
     version="0.1.0",
+    lifespan=lifespan,
 )
 
 # CORS configuration

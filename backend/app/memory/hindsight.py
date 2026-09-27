@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from typing import Any, Dict, List, Optional
 import httpx
 from app.config import get_settings
@@ -46,8 +47,8 @@ class HindsightClient:
 
     @property
     def is_configured(self) -> bool:
-        """Check if API credentials are provided."""
-        return bool(self.api_key)
+        """Check if Hindsight service is configured."""
+        return bool(self.base_url)
 
     def _get_headers(self) -> Dict[str, str]:
         """Generate headers with authentication tokens without logging."""
@@ -61,7 +62,7 @@ class HindsightClient:
         return headers
 
     async def check_health(self) -> bool:
-        """Verify connectivity to Hindsight Cloud without exposing secrets."""
+        """Verify connectivity to Hindsight without exposing secrets."""
         if not self.is_configured:
             return False
 
@@ -85,20 +86,32 @@ class HindsightClient:
         Executes one short retry on network/timeout failure before raising.
         """
         if not self.is_configured:
-            raise HindsightAuthError("Hindsight API key is not configured in environment.")
+            raise HindsightUnavailableError("Hindsight base URL is not configured.")
 
         if not bank_id:
             raise ValueError("bank_id is required for Hindsight Retain.")
 
+        clean_metadata = {str(k): str(v) for k, v in (metadata or {}).items()}
+
         payload = {
+            "items": [
+                {
+                    "content": content,
+                    "context": category or "general",
+                    "metadata": clean_metadata,
+                }
+            ],
+            "async": False,
             "content": content,
-            "metadata": {**(metadata or {}), "category": category or "general"},
+            "metadata": {**clean_metadata, "category": category or "general"},
             "tags": [category] if category else [],
             "context": category or "engineering_context",
         }
 
-        # Primary route followed by fallback path
+        # Official Hindsight endpoints followed by fallback variations
         endpoints = [
+            f"{self.base_url}/v1/default/banks/{bank_id}/memories",
+            f"{self.base_url}/v1/banks/{bank_id}/memories",
             f"{self.base_url}/v1/default/banks/{bank_id}/memories/retain",
             f"{self.base_url}/v1/banks/{bank_id}/memories/retain",
             f"{self.base_url}/v1/banks/{bank_id}/retain",
@@ -163,7 +176,7 @@ class HindsightClient:
         Returns a normalized list of memories: [{"id": ..., "category": ..., "text": ...}].
         """
         if not self.is_configured:
-            raise HindsightAuthError("Hindsight API key is not configured in environment.")
+            raise HindsightUnavailableError("Hindsight base URL is not configured.")
 
         if not bank_id:
             raise ValueError("bank_id is required for Hindsight Recall.")
@@ -171,6 +184,7 @@ class HindsightClient:
         payload = {
             "query": query,
             "limit": limit,
+            "budget": "mid",
         }
 
         endpoints = [
@@ -193,14 +207,14 @@ class HindsightClient:
                         )
 
                         if response.status_code in (401, 403):
-                            raise HindsightAuthError("Authentication to Hindsight Cloud failed. Verify HINDSIGHT_API_KEY.")
+                            raise HindsightAuthError("Authentication to Hindsight failed. Verify HINDSIGHT_API_KEY.")
 
                         if response.status_code == 404 and endpoint != endpoints[-1]:
                             continue
 
                         response.raise_for_status()
                         data = response.json()
-                        return self._normalize_recall_results(data)
+                        return self._normalize_recall_results(data, query=query)
 
                 except (httpx.TimeoutException, httpx.NetworkError) as e:
                     last_error = e
@@ -217,7 +231,7 @@ class HindsightClient:
 
         raise HindsightUnavailableError(f"Hindsight Recall failed: {type(last_error).__name__}")
 
-    def _normalize_recall_results(self, data: Any) -> List[Dict[str, Any]]:
+    def _normalize_recall_results(self, data: Any, query: Optional[str] = None) -> List[Dict[str, Any]]:
         """Normalize various Hindsight response formats into ContextIQ standard shape."""
         items: List[Any] = []
         if isinstance(data, list):
@@ -233,24 +247,108 @@ class HindsightClient:
                 items = data["items"]
 
         normalized: List[Dict[str, Any]] = []
+        seen_texts = set()
+
         for idx, item in enumerate(items):
             if isinstance(item, str):
-                normalized.append({
-                    "id": f"mem_{idx + 1}",
-                    "category": "engineering_context",
-                    "text": item,
-                })
+                text = item
+                mem_id = f"mem_{idx + 1}"
+                category = "fact"
+                created_at = None
+                source = None
             elif isinstance(item, dict):
                 mem_id = item.get("id") or item.get("memory_id") or f"mem_{idx + 1}"
                 text = item.get("text") or item.get("content") or item.get("summary") or item.get("document") or ""
                 metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
-                category = item.get("category") or metadata.get("category") or "engineering_context"
-                if text:
-                    normalized.append({
-                        "id": str(mem_id),
-                        "category": str(category),
-                        "text": str(text),
-                    })
+                raw_cat = (item.get("category") or item.get("context") or metadata.get("category") or item.get("fact_type") or "").strip()
+                created_at = item.get("mentioned_at") or item.get("date") or item.get("created_at") or item.get("updated_at")
+                source_ids = item.get("source_memory_ids")
+                source = source_ids[0] if (isinstance(source_ids, list) and source_ids) else metadata.get("source")
+
+                # Normalize category taxonomy
+                t_lower = text.lower()
+                c_lower = raw_cat.lower()
+                if any(k in c_lower for k in ["decision", "standardized on", "chose", "rejected"]) or "standardized on" in t_lower or "decision" in t_lower:
+                    category = "decision"
+                elif any(k in c_lower for k in ["preference", "prefer"]) or "postgres" in t_lower or "database" in t_lower or "preference" in t_lower:
+                    category = "preference"
+                elif any(k in c_lower for k in ["architecture", "stack", "fastapi", "backend"]) or "fastapi" in t_lower or "backend" in t_lower or "architecture" in t_lower:
+                    category = "architecture"
+                elif any(k in c_lower for k in ["incident", "outage", "issue", "root cause", "lesson"]) or "operational issue" in t_lower or "incident" in t_lower or "root cause" in t_lower:
+                    category = "incident"
+                elif any(k in c_lower for k in ["convention", "standard", "lint", "guideline"]):
+                    category = "convention"
+                elif raw_cat and raw_cat not in ("observation", "world", "general", "engineering_context"):
+                    category = raw_cat
+                else:
+                    category = "fact"
+            else:
+                continue
+
+            if not text:
+                continue
+
+            # Filter out internal extraction artifacts and metadata fragments
+            t_lower = text.lower()
+            if (
+                any(n in t_lower for n in ["extract facts from", "team_id:", "conversation_id:", "test: ", "synthetic:"])
+                or t_lower.startswith("context:")
+                or t_lower.startswith("source:")
+                or t_lower.startswith("event date:")
+                or (text.strip().endswith("?") and any(text.strip().lower().startswith(p) for p in ("what ", "why ", "how ", "who ", "when ", "is there ", "do we ", "does ")))
+            ):
+                continue
+
+            # Deduplicate by base text
+            base_text = text.split(" (mentioned_at=")[0].strip()
+            if not base_text or base_text in seen_texts:
+                continue
+            seen_texts.add(base_text)
+
+            normalized.append({
+                "id": str(mem_id),
+                "category": str(category),
+                "text": str(base_text),
+                "created_at": str(created_at) if created_at else None,
+                "source": str(source) if source else None,
+            })
+
+        # Rank by query relevance if query is provided
+        if query and normalized:
+            q_lower = query.lower()
+            stop_words = {"the", "what", "is", "for", "this", "new", "our", "are", "and", "a", "an", "do", "we", "did", "use", "should", "can", "with", "to", "in", "on", "of", "how", "you", "me", "tell", "using"}
+            q_tokens = set(re.findall(r"\b[a-z0-9_-]+\b", q_lower))
+
+            scored = []
+            for m in normalized:
+                s = 0
+                txt = m["text"].lower()
+                txt_tokens = set(re.findall(r"\b[a-z0-9_-]+\b", txt))
+
+                overlap = q_tokens.intersection(txt_tokens) - stop_words
+                s += len(overlap) * 5
+
+                # Specific engineering domain associations
+                if any(k in q_tokens for k in ["queue", "queues", "job", "jobs", "bullmq", "background"]):
+                    if any(k in txt_tokens for k in ["bullmq", "queue", "queues", "background"]):
+                        s += 20
+                if any(k in q_tokens for k in ["database", "databases", "db", "postgres", "postgresql", "transactional", "sql"]):
+                    if any(k in txt_tokens for k in ["postgres", "postgresql", "database", "sql"]):
+                        s += 20
+                if any(k in q_tokens for k in ["backend", "api", "apis", "framework", "fastapi", "rest", "service", "services"]):
+                    if any(k in txt_tokens for k in ["fastapi", "backend", "service", "services"]):
+                        s += 20
+
+                if s > 0:
+                    scored.append((s, m))
+
+            if scored:
+                scored.sort(key=lambda x: x[0], reverse=True)
+                return [m for _, m in scored]
+            else:
+                # If query is completely unrelated to any memories, return empty list
+                return []
+
         return normalized
 
     async def list_memories(self, bank_id: str, limit: int = 50) -> List[Dict[str, Any]]:
@@ -259,10 +357,12 @@ class HindsightClient:
         Falls back to broad query recall if explicit listing endpoint is unavailable.
         """
         if not self.is_configured:
-            raise HindsightAuthError("Hindsight API key is not configured.")
+            raise HindsightUnavailableError("Hindsight base URL is not configured.")
 
-        # Try GET memories endpoint
+        # Try GET memories endpoint variations
         endpoints = [
+            f"{self.base_url}/v1/default/banks/{bank_id}/memories/list",
+            f"{self.base_url}/v1/banks/{bank_id}/memories/list",
             f"{self.base_url}/v1/default/banks/{bank_id}/memories",
             f"{self.base_url}/v1/banks/{bank_id}/memories",
         ]

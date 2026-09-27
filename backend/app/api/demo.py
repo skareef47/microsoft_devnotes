@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import logging
 from typing import Any, Dict, List
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 from app.memory.bank_resolver import resolve_team_bank_id
 from app.memory.hindsight import HindsightClient
+from app.auth.dependencies import get_current_user
+from app.models import User
 
 logger = logging.getLogger("contextiq.api.demo")
 router = APIRouter(prefix="/demo", tags=["Demo"])
@@ -41,13 +43,15 @@ class SeedResponse(BaseModel):
 
 
 @router.post("/seed", response_model=SeedResponse, summary="Seed deterministic synthetic demo memories into Hindsight")
-async def seed_demo_memories():
+async def seed_demo_memories(
+    current_user: User = Depends(get_current_user),
+):
     """
     Seed fixed deterministic synthetic engineering context memories directly into Hindsight.
     These are synthetic demonstration facts, not real incidents.
     Never inserts memories into PostgreSQL.
     """
-    team_id = "team_default"
+    team_id = current_user.team_id or "team_default"
     bank_id = resolve_team_bank_id(team_id)
 
     if not hindsight_client.is_configured:
@@ -62,7 +66,23 @@ async def seed_demo_memories():
     seeded_results = []
     errors = []
 
+    try:
+        existing_memories = await hindsight_client.list_memories(bank_id=bank_id)
+        existing_texts = {m.get("text", "").strip().lower() for m in existing_memories}
+    except Exception:
+        existing_texts = set()
+
     for seed in SYNTHETIC_DEMO_SEEDS:
+        # Guarantee idempotency: do not re-retain identical synthetic demo memories
+        if seed["text"].strip().lower() in existing_texts:
+            seeded_results.append({
+                "id": "existing",
+                "category": seed["category"],
+                "text": seed["text"],
+                "status": "already_present",
+            })
+            continue
+
         try:
             res = await hindsight_client.retain(
                 bank_id=bank_id,

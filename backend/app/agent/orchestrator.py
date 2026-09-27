@@ -75,7 +75,7 @@ class AgentOrchestrator:
                     query=message,
                     limit=5,
                 )
-                memories_used = recalled
+                memories_used = recalled[:5] if recalled else []
                 memory_status = "available"
             except Exception as e:
                 # Degraded mode: one retry was already attempted by adapter

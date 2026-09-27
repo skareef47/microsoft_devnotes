@@ -7,8 +7,8 @@ from app.memory.hindsight import HindsightClient
 
 settings = get_settings()
 
-SKIP_REASON = "Live Hindsight credentials (HINDSIGHT_API_KEY and HINDSIGHT_BANK_ID) not provided in environment."
-has_credentials = bool(settings.HINDSIGHT_API_KEY and settings.HINDSIGHT_BANK_ID)
+SKIP_REASON = "Live Hindsight configuration (HINDSIGHT_BASE_URL and HINDSIGHT_BANK_ID) not provided in environment."
+has_credentials = bool(settings.HINDSIGHT_BASE_URL and settings.HINDSIGHT_BANK_ID)
 
 
 @pytest.mark.skipif(not has_credentials, reason=SKIP_REASON)

@@ -72,10 +72,63 @@ class MockLLMProvider(BaseLLMProvider):
     """Fallback / Mock LLM provider for zero-key local testing."""
 
     async def generate(self, prompt: str, **kwargs: Any) -> str:
-        return (
-            "This is a response from ContextIQ. "
-            "Configure LLM_API_KEY in .env to connect to your live LLM provider."
-        )
+        # Check if recalled team memories are present in the augmented prompt
+        active_memory_marker = None
+        for m in [
+            "### PERSISTENT TEAM MEMORY (BACKGROUND CONTEXT):",
+            "### RELEVANT TEAM ENGINEERING CONTEXT (FROM HINDSIGHT MEMORY):",
+        ]:
+            if m in prompt:
+                active_memory_marker = m
+                break
+
+        active_user_marker = "### CURRENT USER REQUEST:" if "### CURRENT USER REQUEST:" in prompt else "### USER QUERY:"
+
+        if active_memory_marker:
+            # Memory ON with recalled context
+            try:
+                after_marker = prompt.split(active_memory_marker)[1]
+                memory_section = after_marker.split(active_user_marker)[0].strip()
+                mem_lines = [
+                    line.strip()
+                    for line in memory_section.splitlines()
+                    if line.strip() and (line.strip()[0].isdigit() or line.strip().startswith("-"))
+                ][:3]
+                summary = "\n".join(f"- {m}" for m in mem_lines)
+            except Exception:
+                summary = "- Team engineering decision retained in Hindsight"
+
+            return (
+                f"Based on our team's established engineering standards and recalled context:\n\n"
+                f"{summary}\n\n"
+                f"We recommend following this existing team standard for your task to maintain architectural consistency.\n\n"
+                f"*(Generated via ContextIQ Mock Provider using real Hindsight memory)*"
+            )
+        else:
+            # Memory OFF or no memories available - generic response
+            lower_prompt = prompt.lower()
+            if "queue" in lower_prompt or "job" in lower_prompt:
+                topic_guidance = (
+                    "When selecting a job queue system, standard industry options include RabbitMQ, "
+                    "Redis-backed queues (such as BullMQ or Celery), Apache Kafka, or managed cloud queues (AWS SQS, Google Cloud Tasks). "
+                    "Evaluation depends on delivery guarantees, language stack, and operational scale."
+                )
+            elif "database" in lower_prompt or "data" in lower_prompt:
+                topic_guidance = (
+                    "For database workloads, standard industry practices generally choose PostgreSQL for transactional ACID workloads, "
+                    "MongoDB or DynamoDB for document stores, and Redis for caching."
+                )
+            else:
+                topic_guidance = (
+                    "ContextIQ provides technical guidance for engineering tasks. "
+                    "When memory is disabled, answers are generated using general software engineering principles."
+                )
+
+            return (
+                f"{topic_guidance}\n\n"
+                f"*(Generated via ContextIQ Mock Provider — Memory OFF / Generic mode)*"
+            )
+
 
 
 def get_llm_provider(settings: Optional[Settings] = None) -> BaseLLMProvider:

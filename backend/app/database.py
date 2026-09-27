@@ -30,3 +30,21 @@ def get_db() -> Generator[Session, None, None]:
         yield db
     finally:
         db.close()
+
+
+def init_db() -> None:
+    """Initialize database tables and default team."""
+    import app.models as models  # ensure models are registered
+    Base.metadata.create_all(bind=engine)
+    db = SessionLocal()
+    try:
+        team = db.query(models.Team).filter(models.Team.id == "team_default").first()
+        if not team:
+            team = models.Team(id="team_default", name="ContextIQ Engineering Team")
+            db.add(team)
+            db.commit()
+    except Exception:
+        db.rollback()
+    finally:
+        db.close()
+

@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import logging
 from typing import List, Optional
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 from app.memory.bank_resolver import resolve_team_bank_id
 from app.memory.hindsight import HindsightClient
+from app.auth.dependencies import get_current_user
+from app.models import User
 
 logger = logging.getLogger("contextiq.api.memories")
 router = APIRouter(tags=["Memories"])
@@ -17,6 +19,7 @@ class MemoryRecord(BaseModel):
     category: str
     text: str
     created_at: Optional[str] = None
+    source: Optional[str] = None
 
 
 class MemoriesResponse(BaseModel):
@@ -28,12 +31,14 @@ class MemoriesResponse(BaseModel):
 
 
 @router.get("/memories", response_model=MemoriesResponse, summary="List accessible team memories from Hindsight")
-async def list_memories():
+async def list_memories(
+    current_user: User = Depends(get_current_user),
+):
     """
     Read-only memory inspection endpoint for current team's authorized Hindsight bank.
     Server strictly controls team and bank ID. Memories are never duplicated in PostgreSQL.
     """
-    team_id = "team_default"
+    team_id = current_user.team_id or "team_default"
     bank_id = resolve_team_bank_id(team_id)
 
     if not hindsight_client.is_configured:

@@ -38,10 +38,25 @@ def evaluate_retention(message: str) -> Tuple[bool, str]:
     if not message or len(message.strip()) < 10:
         return False, ""
 
-    msg_lower = message.lower()
+    msg_strip = message.strip()
+
+    # Ordinary transient questions should not be retained as memories
+    if msg_strip.endswith("?"):
+        return False, ""
+
+    msg_lower = msg_strip.lower()
+    question_prefixes = (
+        "what ", "why ", "how ", "who ", "when ", "which ", "where ",
+        "can you ", "could you ", "tell me ", "should we ", "is there ",
+        "do we ", "does the "
+    )
+    if any(msg_lower.startswith(prefix) for prefix in question_prefixes):
+        return False, ""
+
     for pattern in COMPILED_PATTERNS:
         match = pattern.search(msg_lower)
         if match:
             return True, match.group(0)
 
     return False, ""
+

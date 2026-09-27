@@ -172,3 +172,74 @@ async def test_persistence_retain_then_recall_cycle():
         assert len(recalled) == 1
         assert recalled[0]["id"] == "mem_persisted_99"
         assert "FastAPI" in recalled[0]["text"]
+
+
+def test_normalization_deduplication_and_metadata():
+    """Test 7 — Normalization: Deduplicates identical base texts and extracts metadata."""
+    client = HindsightClient()
+    raw_hindsight_data = [
+        {
+            "id": "item_1",
+            "text": "Our team standardized on BullMQ for background jobs. (mentioned_at=2026-09-27 12:00:00)",
+            "context": "decision",
+            "date": "2026-09-27T12:00:00Z",
+            "source_memory_ids": ["src_123"],
+        },
+        {
+            "id": "item_2",
+            "text": "Our team standardized on BullMQ for background jobs. (mentioned_at=2026-09-27 12:05:00)",
+            "context": "decision",
+            "date": "2026-09-27T12:05:00Z",
+        },
+        {
+            "id": "item_3",
+            "text": "Context: standardized on",
+            "context": "artifact",
+        },
+        {
+            "id": "item_4",
+            "text": "The team uses PostgreSQL for transactional application data.",
+            "context": "preference",
+            "date": "2026-09-27T11:00:00Z",
+        },
+    ]
+
+    normalized = client._normalize_recall_results(raw_hindsight_data)
+    # item_3 is an artifact and filtered out; item_2 is a duplicate of item_1 and filtered out
+    assert len(normalized) == 2
+    assert normalized[0]["text"] == "Our team standardized on BullMQ for background jobs."
+    assert normalized[0]["category"] == "decision"
+    assert normalized[0]["created_at"] is not None
+    assert normalized[0]["source"] == "src_123"
+    assert normalized[1]["text"] == "The team uses PostgreSQL for transactional application data."
+    assert normalized[1]["category"] == "preference"
+
+
+def test_memory_relevance_ranking():
+    """Test 8 — Relevance Ranking: Query intent surfaces correct memory; unrelated queries return empty."""
+    client = HindsightClient()
+    raw_data = [
+        {"id": "m1", "text": "The team standardized on BullMQ for background jobs.", "context": "decision"},
+        {"id": "m2", "text": "The team uses PostgreSQL for transactional application data.", "context": "preference"},
+        {"id": "m3", "text": "The team uses FastAPI for backend services.", "context": "architecture"},
+    ]
+
+    # Queue query -> BullMQ ranks first
+    res_queue = client._normalize_recall_results(raw_data, query="What queue system should I use for background jobs?")
+    assert len(res_queue) > 0
+    assert "BullMQ" in res_queue[0]["text"]
+
+    # Database query -> PostgreSQL ranks first
+    res_db = client._normalize_recall_results(raw_data, query="What database do we use?")
+    assert len(res_db) > 0
+    assert "PostgreSQL" in res_db[0]["text"]
+
+    # Backend query -> FastAPI ranks first
+    res_api = client._normalize_recall_results(raw_data, query="What backend framework do we use for services?")
+    assert len(res_api) > 0
+    assert "FastAPI" in res_api[0]["text"]
+
+    # Unrelated query -> empty list returned (irrelevant memories do not dominate)
+    res_unrelated = client._normalize_recall_results(raw_data, query="What is the capital of France?")
+    assert res_unrelated == []
+

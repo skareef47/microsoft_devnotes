@@ -24,15 +24,15 @@ class Settings(BaseSettings):
     JWT_ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 1440  # 24 hours
 
-    # Memory: Hindsight Cloud
+    # Memory: Self-Hosted Hindsight
     # Server-only credentials. Never exposed to frontend.
     HINDSIGHT_API_KEY: str = ""
-    HINDSIGHT_BANK_ID: str = ""
-    HINDSIGHT_BASE_URL: str = "https://api.hindsight.cloud"
+    HINDSIGHT_BANK_ID: str = "contextiq-team"
+    HINDSIGHT_BASE_URL: str = "http://localhost:8888"
 
     # LLM Provider Configuration
     # Supported providers: gemini, openai, anthropic, mock
-    LLM_PROVIDER: str = "gemini"
+    LLM_PROVIDER: str = "mock"
     LLM_API_KEY: str = ""
     LLM_MODEL: str = "gemini-1.5-flash"
 

@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 from app.memory.bank_resolver import resolve_team_bank_id
 from app.agent.orchestrator import AgentOrchestrator
+from app.auth.dependencies import get_current_user
+from app.models import User
 
 router = APIRouter(tags=["Chat"])
 
@@ -16,6 +18,8 @@ class MemoryItem(BaseModel):
     id: str
     category: str
     text: str
+    created_at: Optional[str] = None
+    source: Optional[str] = None
 
 
 class ChatRequest(BaseModel):
@@ -33,13 +37,16 @@ class ChatResponse(BaseModel):
 
 
 @router.post("/chat", response_model=ChatResponse, summary="Send message to ContextIQ agent")
-async def chat_endpoint(req: ChatRequest):
+async def chat_endpoint(
+    req: ChatRequest,
+    current_user: User = Depends(get_current_user),
+):
     """
     Main chat endpoint coordinating the ContextIQ persistent memory pipeline.
     Server controls the team and bank ID resolution; client cannot inject an arbitrary bank.
     """
-    # 1. Resolve server-side team and memory bank
-    team_id = "team_default"
+    # 1. Resolve server-side team and memory bank based on authenticated user
+    team_id = current_user.team_id or "team_default"
     bank_id = resolve_team_bank_id(team_id)
 
     # 2. Process via orchestrator (Retain, Recall, LLM, Degraded mode)
