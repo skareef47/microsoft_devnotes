@@ -1,0 +1,55 @@
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: contextiq-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: contextiq
+      POSTGRES_PASSWORD: contextiq_dev_password
+      POSTGRES_DB: contextiq_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U contextiq -d contextiq_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: contextiq-backend
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      DATABASE_URL: postgresql://contextiq:contextiq_dev_password@db:5432/contextiq_db
+      JWT_SECRET: ${JWT_SECRET:-dev_jwt_secret_must_change_in_production_32chars}
+      HINDSIGHT_API_KEY: ${HINDSIGHT_API_KEY:-}
+      HINDSIGHT_BANK_ID: ${HINDSIGHT_BANK_ID:-}
+      LLM_PROVIDER: ${LLM_PROVIDER:-gemini}
+      LLM_API_KEY: ${LLM_API_KEY:-}
+      LLM_MODEL: ${LLM_MODEL:-gemini-1.5-flash}
+      FRONTEND_URL: ${FRONTEND_URL:-http://localhost:3000}
+    depends_on:
+      db:
+        condition: service_healthy
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: contextiq-frontend
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      NEXT_PUBLIC_API_URL: http://localhost:8000
+    depends_on:
+      - backend
+
+volumes:
+  pgdata:
